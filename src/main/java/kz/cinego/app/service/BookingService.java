@@ -26,11 +26,13 @@ public class BookingService {
     private final UserRepository userRepo;
     private final PricingService pricing;
 
-    public BookingService(ScreeningRepository screeningRepo,
-                          SeatRepository seatRepo,
-                          BookingRepository bookingRepo,
-                          UserRepository userRepo,
-                          PricingService pricing) {
+    public BookingService(
+            ScreeningRepository screeningRepo,
+            SeatRepository seatRepo,
+            BookingRepository bookingRepo,
+            UserRepository userRepo,
+            PricingService pricing
+    ) {
         this.screeningRepo = screeningRepo;
         this.seatRepo = seatRepo;
         this.bookingRepo = bookingRepo;
@@ -38,54 +40,36 @@ public class BookingService {
         this.pricing = pricing;
     }
 
-    public record CreateBookingResult(long bookingId, BigDecimal totalBeforePoints, BigDecimal totalAfterPoints, int usedPoints) {}
+    public record CreateBookingResult(
+            long bookingId,
+            BigDecimal totalBeforePoints,
+            BigDecimal totalAfterPoints,
+            int usedPoints
+    ) {}
 
-    public CreateBookingResult createBooking(long userId, long screeningId, List<int[]> seatCoords, int pointsToUse) {
+    public CreateBookingResult createBooking(
+            long userId,
+            long screeningId,
+            List<int[]> seatCoords,
+            int pointsToUse
+    ) {
         try (Connection conn = Database.getConnection()) {
             conn.setAutoCommit(false);
 
-            Screening screening = screeningRepo.findById(screeningId);
-            if (screening == null) {
-                conn.rollback();
-                throw new IllegalArgumentException("Screening not found: " + screeningId);
-            }
+            Screening screening = getScreening(screeningId);
+            User user = getUser(conn, userId);
 
-            User user = userRepo.findById(conn, userId);
-            if (user == null) {
-                conn.rollback();
-                throw new IllegalArgumentException("User not found: " + userId);
-            }
+            List<Seat> seats = getSeats(conn, screening, seatCoords);
+            checkSeatsAvailability(conn, screeningId, seats);
 
-            List<Seat> seats = new ArrayList<>();
-            for (int[] rc : seatCoords) {
-                Seat seat = seatRepo.findByHallRowCol(conn, screening.hallId(), rc[0], rc[1]);
-                if (seat == null) {
-                    conn.rollback();
-                    throw new IllegalArgumentException("Seat not found: row=" + rc[0] + " col=" + rc[1]);
-                }
-                seats.add(seat);
-            }
-
-            for (Seat seat : seats) {
-                if (seatRepo.isSeatBookedForScreening(conn, screeningId, seat.id())) {
-                    conn.rollback();
-                    throw new IllegalStateException("Seat already booked: row=" + seat.rowNum() + " col=" + seat.colNum());
-                }
-            }
-
-            BigDecimal total = BigDecimal.ZERO;
             List<BigDecimal> seatPrices = new ArrayList<>();
-            for (Seat seat : seats) {
-                BigDecimal p = pricing.seatPrice(screening.basePrice(), seat.seatType(), screening.startTime());
-                seatPrices.add(p);
-                total = total.add(p);
-            }
-            total = total.setScale(2, RoundingMode.HALF_UP);
+            BigDecimal total = calculateTotal(screening, seats, seatPrices);
 
-            BigDecimal afterPoints = pricing.applyPointsDiscount(total, user.loyaltyPoints(), pointsToUse)
+            BigDecimal afterPoints = pricing
+                    .applyPointsDiscount(total, user.loyaltyPoints(), pointsToUse)
                     .setScale(2, RoundingMode.HALF_UP);
 
-            int usedPoints = total.subtract(afterPoints).intValue(); // 1 point = 1 KZT
+            int usedPoints = total.subtract(afterPoints).intValue();
 
             long bookingId = bookingRepo.insertBooking(conn, userId, screeningId, afterPoints);
 
@@ -109,20 +93,20 @@ public class BookingService {
         try (Connection conn = Database.getConnection()) {
             conn.setAutoCommit(false);
 
-            Booking b = bookingRepo.findById(conn, bookingId);
-            if (b == null) {
+            Booking booking = bookingRepo.findById(conn, bookingId);
+            if (booking == null) {
                 conn.rollback();
                 throw new IllegalArgumentException("Booking not found: " + bookingId);
             }
-            if (!"CREATED".equals(b.status())) {
+            if (!"CREATED".equals(booking.status())) {
                 conn.rollback();
-                throw new IllegalStateException("Only CREATED can be paid. Current=" + b.status());
+                throw new IllegalStateException("Only CREATED can be paid. Current=" + booking.status());
             }
 
             bookingRepo.markPaid(conn, bookingId);
 
-            int earned = pricing.earnedPoints(b.totalPrice());
-            userRepo.addPoints(conn, b.userId(), earned);
+            int earned = pricing.earnedPoints(booking.totalPrice());
+            userRepo.addPoints(conn, booking.userId(), earned);
 
             Booking updated = bookingRepo.findById(conn, bookingId);
             conn.commit();
@@ -137,23 +121,19 @@ public class BookingService {
         try (Connection conn = Database.getConnection()) {
             conn.setAutoCommit(false);
 
-            Booking b = bookingRepo.findById(conn, bookingId);
-            if (b == null) {
+            Booking booking = bookingRepo.findById(conn, bookingId);
+            if (booking == null) {
                 conn.rollback();
                 throw new IllegalArgumentException("Booking not found: " + bookingId);
             }
-            if ("CANCELLED".equals(b.status())) {
+            if ("CANCELLED".equals(booking.status())) {
                 conn.rollback();
                 throw new IllegalStateException("Already cancelled");
             }
 
-            Screening screening = screeningRepo.findById(b.screeningId());
-            if (screening == null) {
-                conn.rollback();
-                throw new IllegalStateException("Screening not found for booking");
-            }
+            Screening screening = getScreening(booking.screeningId());
 
-            BigDecimal refund = computeRefund(b.totalPrice(), screening.startTime());
+            BigDecimal refund = computeRefund(booking.totalPrice(), screening.startTime());
             bookingRepo.markCancelled(conn, bookingId, refund);
 
             Booking updated = bookingRepo.findById(conn, bookingId);
@@ -165,12 +145,75 @@ public class BookingService {
         }
     }
 
+    private Screening getScreening(long id) {
+        Screening screening = screeningRepo.findById(id);
+        if (screening == null) {
+            throw new IllegalArgumentException("Screening not found: " + id);
+        }
+        return screening;
+    }
+
+    private User getUser(Connection conn, long id) {
+        User user = userRepo.findById(conn, id);
+        if (user == null) {
+            throw new IllegalArgumentException("User not found: " + id);
+        }
+        return user;
+    }
+
+    private List<Seat> getSeats(Connection conn, Screening screening, List<int[]> seatCoords) {
+        List<Seat> seats = new ArrayList<>();
+        for (int[] rc : seatCoords) {
+            Seat seat = seatRepo.findByHallRowCol(conn, screening.hallId(), rc[0], rc[1]);
+            if (seat == null) {
+                throw new IllegalArgumentException("Seat not found: row=" + rc[0] + " col=" + rc[1]);
+            }
+            seats.add(seat);
+        }
+        return seats;
+    }
+
+    private void checkSeatsAvailability(Connection conn, long screeningId, List<Seat> seats) {
+        for (Seat seat : seats) {
+            if (seatRepo.isSeatBookedForScreening(conn, screeningId, seat.id())) {
+                throw new IllegalStateException(
+                        "Seat already booked: row=" + seat.rowNum() + " col=" + seat.colNum()
+                );
+            }
+        }
+    }
+
+    private BigDecimal calculateTotal(
+            Screening screening,
+            List<Seat> seats,
+            List<BigDecimal> seatPrices
+    ) {
+        BigDecimal total = BigDecimal.ZERO;
+
+        for (Seat seat : seats) {
+            BigDecimal price = pricing.seatPrice(
+                    screening.basePrice(),
+                    seat.seatType(),
+                    screening.startTime()
+            );
+            seatPrices.add(price);
+            total = total.add(price);
+        }
+
+        return total.setScale(2, RoundingMode.HALF_UP);
+    }
+
     private BigDecimal computeRefund(BigDecimal total, LocalDateTime startTime) {
         LocalDateTime now = LocalDateTime.now();
-        if (now.isAfter(startTime)) return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        if (now.isAfter(startTime)) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
 
         long minutes = Duration.between(now, startTime).toMinutes();
-        BigDecimal rate = (minutes >= 120) ? new BigDecimal("0.90") : new BigDecimal("0.50");
+        BigDecimal rate = minutes >= 120
+                ? new BigDecimal("0.90")
+                : new BigDecimal("0.50");
+
         return total.multiply(rate).setScale(2, RoundingMode.HALF_UP);
     }
 }

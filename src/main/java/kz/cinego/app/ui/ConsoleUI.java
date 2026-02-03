@@ -5,54 +5,56 @@ import kz.cinego.app.controller.MovieController;
 import kz.cinego.app.controller.ScreeningController;
 import kz.cinego.app.entity.Movie;
 import kz.cinego.app.entity.Screening;
-import kz.cinego.app.repository.UserRepository;
 import kz.cinego.app.entity.User;
+import kz.cinego.app.repository.UserRepository;
 
 import java.util.*;
 
 public class ConsoleUI {
+
     private final MovieController movieController;
     private final ScreeningController screeningController;
     private final BookingController bookingController;
-    private final User defaultUser;
+    private final User currentUser;
 
-    public ConsoleUI(MovieController movieController,
-                     ScreeningController screeningController,
-                     BookingController bookingController) {
+    public ConsoleUI(
+            MovieController movieController,
+            ScreeningController screeningController,
+            BookingController bookingController
+    ) {
         this.movieController = movieController;
         this.screeningController = screeningController;
         this.bookingController = bookingController;
-        this.defaultUser = new UserRepository().findDefaultUser();
+        this.currentUser = new UserRepository().findDefaultUser();
     }
 
     public void run() {
-        Scanner sc = new Scanner(System.in);
+        Scanner scanner = new Scanner(System.in);
 
         System.out.println("=== CineGo (Console) ===");
-        System.out.println("User: " + defaultUser.fullName() + " | points=" + defaultUser.loyaltyPoints());
+        System.out.println(
+                "User: " + currentUser.fullName() +
+                        " | points=" + currentUser.loyaltyPoints()
+        );
         System.out.println();
 
         while (true) {
-            System.out.println("""
-                1) List movies
-                2) List screenings by movie
-                3) Create booking (seat check + pricing + points)
-                4) Pay booking (earn points)
-                5) Cancel booking (refund policy)
-                0) Exit
-                """);
+            printMenu();
             System.out.print("> ");
 
-            String cmd = sc.nextLine().trim();
+            String command = scanner.nextLine().trim();
 
             try {
-                switch (cmd) {
-                    case "1" -> listMovies();
-                    case "2" -> listScreenings(sc);
-                    case "3" -> createBooking(sc);
-                    case "4" -> pay(sc);
-                    case "5" -> cancel(sc);
-                    case "0" -> { System.out.println("Bye."); return; }
+                switch (command) {
+                    case "1" -> showMovies();
+                    case "2" -> showScreenings(scanner);
+                    case "3" -> handleCreateBooking(scanner);
+                    case "4" -> handlePay(scanner);
+                    case "5" -> handleCancel(scanner);
+                    case "0" -> {
+                        System.out.println("Bye.");
+                        return;
+                    }
                     default -> System.out.println("Unknown command.");
                 }
             } catch (Exception e) {
@@ -63,85 +65,123 @@ public class ConsoleUI {
         }
     }
 
-    private void listMovies() {
+    private void printMenu() {
+        System.out.println("""
+                1) List movies
+                2) List screenings by movie
+                3) Create booking (seat check + pricing + points)
+                4) Pay booking (earn points)
+                5) Cancel booking (refund policy)
+                0) Exit
+                """);
+    }
+
+    private void showMovies() {
         List<Movie> movies = movieController.listMovies();
         System.out.println("Movies:");
-        for (Movie m : movies) {
-            System.out.printf("  [%d] %s (%s, %d min, %s)%n",
-                    m.id(), m.title(), m.genre(), m.durationMin(), m.ageRating());
+
+        for (Movie movie : movies) {
+            System.out.printf(
+                    "  [%d] %s (%s, %d min, %s)%n",
+                    movie.id(),
+                    movie.title(),
+                    movie.genre(),
+                    movie.durationMin(),
+                    movie.ageRating()
+            );
         }
     }
 
-    private void listScreenings(Scanner sc) {
+    private void showScreenings(Scanner scanner) {
         System.out.print("movieId: ");
-        long movieId = Long.parseLong(sc.nextLine().trim());
+        long movieId = Long.parseLong(scanner.nextLine().trim());
 
-        List<Screening> list = screeningController.listByMovie(movieId);
-        if (list.isEmpty()) {
+        List<Screening> screenings = screeningController.listByMovie(movieId);
+        if (screenings.isEmpty()) {
             System.out.println("No screenings.");
             return;
         }
 
-        for (Screening s : list) {
-            System.out.printf("  [%d] start=%s hall=%d base=%s%n",
-                    s.id(), s.startTime(), s.hallId(), s.basePrice());
+        for (Screening screening : screenings) {
+            System.out.printf(
+                    "  [%d] start=%s hall=%d base=%s%n",
+                    screening.id(),
+                    screening.startTime(),
+                    screening.hallId(),
+                    screening.basePrice()
+            );
         }
     }
 
-    private void createBooking(Scanner sc) {
+    private void handleCreateBooking(Scanner scanner) {
         System.out.print("screeningId: ");
-        long screeningId = Long.parseLong(sc.nextLine().trim());
+        long screeningId = Long.parseLong(scanner.nextLine().trim());
 
         System.out.println("Seats format: row,col row,col ...  (example: 1,1 1,2 6,8)");
         System.out.print("> ");
-        String input = sc.nextLine().trim();
+        String input = scanner.nextLine().trim();
+
         List<int[]> seats = parseSeats(input);
 
         System.out.print("points to use (0 if none): ");
-        int pointsToUse = Integer.parseInt(sc.nextLine().trim());
+        int pointsToUse = Integer.parseInt(scanner.nextLine().trim());
 
-        var res = bookingController.create(defaultUser.id(), screeningId, seats, pointsToUse);
+        var result = bookingController.create(
+                currentUser.id(),
+                screeningId,
+                seats,
+                pointsToUse
+        );
 
-        System.out.println("Booking created: id=" + res.bookingId());
-        System.out.println("Total before points: " + res.totalBeforePoints());
-        System.out.println("Used points: " + res.usedPoints());
-        System.out.println("Total after points: " + res.totalAfterPoints());
+        System.out.println("Booking created: id=" + result.bookingId());
+        System.out.println("Total before points: " + result.totalBeforePoints());
+        System.out.println("Used points: " + result.usedPoints());
+        System.out.println("Total after points: " + result.totalAfterPoints());
     }
 
-    private void pay(Scanner sc) {
+    private void handlePay(Scanner scanner) {
         System.out.print("bookingId: ");
-        long bookingId = Long.parseLong(sc.nextLine().trim());
+        long bookingId = Long.parseLong(scanner.nextLine().trim());
 
-        var b = bookingController.pay(bookingId);
-        System.out.println("PAID. total=" + b.totalPrice() + " paidAt=" + b.paidAt());
+        var booking = bookingController.pay(bookingId);
+        System.out.println(
+                "PAID. total=" + booking.totalPrice() +
+                        " paidAt=" + booking.paidAt()
+        );
     }
 
-    private void cancel(Scanner sc) {
+    private void handleCancel(Scanner scanner) {
         System.out.print("bookingId: ");
-        long bookingId = Long.parseLong(sc.nextLine().trim());
+        long bookingId = Long.parseLong(scanner.nextLine().trim());
 
-        var b = bookingController.cancel(bookingId);
-        System.out.println("CANCELLED. refund=" + b.refundAmount());
+        var booking = bookingController.cancel(bookingId);
+        System.out.println("CANCELLED. refund=" + booking.refundAmount());
     }
 
     private List<int[]> parseSeats(String input) {
-        if (input.isEmpty()) throw new IllegalArgumentException("No seats provided.");
-
-        String[] parts = input.split("\\s+");
-        List<int[]> list = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-
-        for (String p : parts) {
-            String[] rc = p.split(",");
-            if (rc.length != 2) throw new IllegalArgumentException("Bad seat: " + p);
-
-            int r = Integer.parseInt(rc[0]);
-            int c = Integer.parseInt(rc[1]);
-
-            String key = r + ":" + c;
-            if (seen.add(key)) list.add(new int[]{r, c});
+        if (input.isEmpty()) {
+            throw new IllegalArgumentException("No seats provided.");
         }
 
-        return list;
+        String[] parts = input.split("\\s+");
+        List<int[]> seats = new ArrayList<>();
+        Set<String> unique = new HashSet<>();
+
+        for (String part : parts) {
+            String[] rc = part.split(",");
+            if (rc.length != 2) {
+                throw new IllegalArgumentException("Bad seat: " + part);
+            }
+
+            int row = Integer.parseInt(rc[0]);
+            int col = Integer.parseInt(rc[1]);
+
+            String key = row + ":" + col;
+            if (unique.add(key)) {
+                seats.add(new int[]{row, col});
+            }
+        }
+
+        return seats;
     }
 }
